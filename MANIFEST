@@ -1,0 +1,9 @@
+MANIFEST
+README
+LICENSE
+Changes
+Makefile.PL
+lib/Stark.pm
+lib/Stark/Worker.pm
+lib/Stark/RPC.pm
+t/001_stark.t
