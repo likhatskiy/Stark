@@ -4,7 +4,7 @@ use Storable qw(thaw nfreeze);
 use Mojo::IOLoop;
 use Data::Dumper;
 
-has [qw(id stark pid ioloop)];
+has [qw(id stark pid ioloop worker_name)];
 has jobs   => sub { {} };
 
 sub new {
@@ -55,11 +55,15 @@ sub unregister {
 
 	delete $self->stark->workers->{$self->{id}};
 
+	for (values %{ $self->jobs }) {
+		$_->{state} = 'inactive';
+	}
+
 	if ($self->{pid}) {
 		$self->stark->drop_handle($self->{pid});
 		delete $self->stark->{workers_pid}->{$self->{pid}};
 
-		$self->log->info("Worker [ID $self->{id}] $self->{pid} stopped.");
+		$self->log->info("Worker [ID $self->{id}".($self->worker_name ? ', '.$self->worker_name : '')."] $self->{pid} stopped.");
 	}
 
 	$self->stark->emit(worker_finish => $self);
@@ -115,7 +119,7 @@ sub run {
 		}
 		$self->log->error("[$$] Init failed: $@") if $@;
 
-		$self->log->info("Worker [ID $self->{id}] $$ started.");
+		$self->log->info("Worker [ID $self->{id}".($self->worker_name ? ', '.$self->worker_name : '')."] $$ started.");
 
 		$self->ioloop->start;
 
@@ -127,7 +131,7 @@ sub run {
 
 sub change_name {
 	my $self = shift;
-	$0 = $self->stark->name.': worker ['.$self->{state}.']';
+	$0 = $self->stark->name.': worker'.($self->worker_name ? ' '.$self->worker_name : '').' ['.$self->{state}.']';
 }
 
 sub cleanup {

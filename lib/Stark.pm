@@ -10,7 +10,9 @@ has name             => sub { 'stark' };
 has worker_class     => sub { 'Stark::Worker' };
 has accept_interval  => sub { 0.25 };
 has graceful_timeout => sub { 10   };
+has custom_workers   => sub { {} };
 has worker_count     => sub { 1 };
+has task_limit       => sub { 0 };
 has tasks            => sub { {} };
 has jobs             => sub { {} };
 has workers          => sub { {} };
@@ -56,6 +58,9 @@ sub run {
 	$SIG{CHLD} = sub { _sig_chld($self) };
 	$SIG{TERM} = sub { _stop    ($self) };
 
+	$self->custom_workers();
+	$self->worker_count();
+
 	$self->manage;
 
 	$self->ioloop->recurring($self->accept_interval => sub {
@@ -85,7 +90,16 @@ sub manage {
 	my $self = shift;
 
 	if (!$self->{finished}) {
-		$self->worker->run while keys %{$self->{workers}} < $self->{worker_count};
+		unless (%{ $self->{custom_workers} }) {
+			$self->worker->run while keys %{$self->{workers}} < $self->{worker_count};
+		} else {
+			for my $name (keys %{ $self->{custom_workers} }) {
+				$self->worker(
+					worker_name => $name,
+					%{ $self->{custom_workers}->{$name} },
+				)->run unless grep {$_->{worker_name} eq $name} values %{ $self->workers };
+			}
+		}
 	# Shutdown
 	} elsif (!keys %{ $self->{workers} }) {
 		$self->log->info("Stark stopped.");
@@ -107,16 +121,22 @@ sub manage {
 
 sub worker {
 	my $self = shift;
-	my $pid  = shift;
+	my $p    = @_ > 1 ? {@_}  : undef;
+	my $pid  = $p     ? undef : shift;
 
 	return $self->{workers_pid}->{$pid} if $pid;
 
-	unless ($self->worker_class->can('new')) {
-		(my $file = $self->worker_class) =~ s{::|'}{/}g;
+	my $worker_class = ($p || {})->{class} || $self->worker_class;
+
+	unless ($worker_class->can('new')) {
+		(my $file = $worker_class) =~ s{::|'}{/}g;
 		require "$file.pm";
 	}
 
-	my $worker = $self->worker_class->new(stark => $self);
+	my $worker = $worker_class->new(
+		stark => $self,
+		%{ $p || {} },
+	);
 	$self->emit(worker_add => $worker);
 
 	return $worker;
@@ -149,8 +169,13 @@ sub rpc_handler {
 	$self->log->debug("Job $result->{id} is $result->{state} on $worker_pid worker.");
 
 	if (my $worker = $self->worker($worker_pid)) {
-		$worker->{state} = 'idle';
-		--$worker->{jobs_active};
+		if ($self->task_limit > 0 && $worker->{jobs_accepted} >= $self->task_limit) {
+			$worker->{state} = 'stop';
+			$self->term_worker($worker);
+		} else {
+			$worker->{state} = 'idle';
+			--$worker->{jobs_active};
+		}
 	}
 
 	$self->emit('finish_job' => $result);
@@ -178,11 +203,18 @@ sub _stop {
 	$self->{finished} = 1;
 
 	for my $worker(values %{ $self->workers }) {
-		$self->log->debug("Trying to stop worker $worker->{pid} gracefully.");
-		$worker->{graceful} = time;
-
-		kill 'TERM', $worker->pid;
+		$worker->term_worker($worker);
 	}
+}
+
+sub term_worker {
+	my $self   = shift;
+	my $worker = shift;
+
+	$self->log->debug("Trying to stop worker $worker->{pid} gracefully.");
+	$worker->{graceful} = time;
+
+	kill 'TERM', $worker->pid;
 }
 
 1;

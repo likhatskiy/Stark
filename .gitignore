@@ -21,3 +21,4 @@
 /debuild
 Makefile
 Makefile.old
+.DS_Store
