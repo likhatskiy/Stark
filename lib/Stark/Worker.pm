@@ -41,6 +41,7 @@ sub dequeue { delete shift->jobs->{ +shift } }
 
 sub send {
 	my ($self, $job) = (shift, shift);
+	return unless $self->stark->{started};
 
 	$self->log->debug("Job $job->{id} was sent to $self->{pid} worker.")
 		if print { $self->stark->handler($self->pid) } nfreeze $job;

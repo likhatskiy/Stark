@@ -19,7 +19,7 @@ has workers          => sub { {} };
 has log              => sub { Mojo::Log->new          };
 has ioloop           => sub { Mojo::IOLoop->singleton };
 
-our $VERSION = 0.1;
+our $VERSION = 0.3;
 
 sub recurring { shift->ioloop->recurring(@_) }
 
@@ -30,17 +30,28 @@ sub add_task {
 }
 
 sub enqueue {
-	my ($self, $task) = (shift, shift);
-	my $args          = shift;
+	my $self       = shift;
+	my $task       = shift;
+	my $args       = shift;
+	my $for_worker = shift;
 
 	return unless $self->tasks->{$task};
 
+	$self->log->error("<for_worker> is required for custom_workers") and return 
+		if %{ $self->{custom_workers} || {} } && !$for_worker;
+
+	$self->log->error("Worker [$for_worker] NOT EXISTS") and return 
+		if
+		%{ $self->{custom_workers} || {} }
+		and !(grep {$_ eq $for_worker} keys %{ $self->{custom_workers} });
+
 	my $job = {
-		id       => $self->_id,
-		args     => $args,
-		created  => time,
-		state    => 'inactive',
-		task     => $task,
+		id         => $self->_id,
+		args       => $args,
+		created    => time,
+		state      => 'inactive',
+		task       => $task,
+		for_worker => $for_worker,
 	};
 
 	$self->jobs->{$job->{id}} = $job;
@@ -67,20 +78,10 @@ sub run {
 		$self->manage;
 		return if $self->{finished};
 
-		my @jobs = grep {$_->{state} eq 'inactive'} values %{ $self->{jobs} };
-		return unless @jobs;
-
-		my @workers = 
-			grep { $_->{state} eq 'idle' }
-			sort {$a->{jobs_accepted} <=> $b->{jobs_accepted}}
-			values %{ $self->{workers} }
-		;
-
-		for (@workers) {
-			$_->enqueue(shift @jobs);
-			last unless @jobs;
-		}
+		$self->manage_jobs;
+		return;
 	});
+	$self->{started} = time;
 
 	$self->ioloop->start;
 	exit 0;
@@ -116,6 +117,36 @@ sub manage {
 			$worker->{force} = 1;
 			kill 'KILL', $worker->pid;
 		}
+	}
+}
+
+sub manage_jobs {
+	my $self = shift;
+
+	my @jobs = grep {$_->{state} eq 'inactive'} values %{ $self->{jobs} };
+	return unless @jobs;
+
+	my $j     = {};
+	my $j_cnt = scalar @jobs;
+
+	for (@jobs) {
+		push @{$j->{ $_->{for_worker} || 'no_type' }}, $_;
+	}
+
+	my @workers = 
+		grep { $_->{state} eq 'idle' }
+		sort {$a->{jobs_accepted} <=> $b->{jobs_accepted}}
+		values %{ $self->{workers} }
+	;
+
+	for (@workers) {
+		my $for_worker = $_->{worker_name} || 'no_type';
+
+		next unless @{ $j->{$for_worker} || [] };
+
+		$_->enqueue(shift @{ $j->{$for_worker} });
+		$j_cnt--;
+		last unless $j_cnt;
 	}
 }
 
