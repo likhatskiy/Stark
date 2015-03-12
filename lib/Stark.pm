@@ -35,6 +35,11 @@ sub enqueue {
 
 	return unless $self->tasks->{$task};
 
+	my $workers = [ map { $_->{worker_name} } values %{ $self->{workers} } ];
+	
+	$self->log->debug("Worker for job type [$args->{job_type}] NOT EXISTS") and return 
+		if ($args->{job_type} and !($args->{job_type} ~~ @$workers));
+
 	my $job = {
 		id       => $self->_id,
 		args     => $args,
@@ -70,6 +75,13 @@ sub run {
 		my @jobs = grep {$_->{state} eq 'inactive'} values %{ $self->{jobs} };
 		return unless @jobs;
 
+		my $j     = {};
+		my $j_cnt = scalar @jobs;
+
+		for (@jobs){
+			push @{$j->{ $_->{args}->{job_type} || 'no_type' }}, $_;
+		}
+
 		my @workers = 
 			grep { $_->{state} eq 'idle' }
 			sort {$a->{jobs_accepted} <=> $b->{jobs_accepted}}
@@ -77,8 +89,10 @@ sub run {
 		;
 
 		for (@workers) {
-			$_->enqueue(shift @jobs);
-			last unless @jobs;
+			next unless (ref $j->{$_->{worker_name} || 'no_type'} eq 'ARRAY' and @{$j->{$_->{worker_name} || 'no_type'}});
+			$_->enqueue(shift @{$j->{$_->{worker_name} || 'no_type'}});
+			$j_cnt--;
+			last unless $j_cnt;
 		}
 	});
 
