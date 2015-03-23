@@ -234,7 +234,7 @@ sub _stop {
 	$self->{finished} = 1;
 
 	for my $worker(values %{ $self->workers }) {
-		$worker->term_worker($worker);
+		$self->term_worker($worker);
 	}
 }
 
